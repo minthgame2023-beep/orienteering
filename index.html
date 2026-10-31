@@ -329,7 +329,12 @@ function openScanner(title) {
 let S = null;
 async function initStudent(packed) {
   let cfg;
-  try { cfg = unpackObj(packed); if (cfg.v !== 1 || !cfg.g || !cfg.c) throw 0; }
+  try {
+    cfg = unpackObj(packed);
+    if (cfg.v === 2) cfg.g = cfg.g.map(([n, r, k]) => ({ n, r: r.split(','), k: k.map(j => j >= 0 ? cfg.K[j] : 0) }));
+    else if (cfg.v !== 1) throw 0;
+    if (!cfg.g || !cfg.c) throw 0;
+  }
   catch (e) { return renderFatal('連結無效', '這個連結可能不完整或被截斷，請重新向老師索取。'); }
   const hmap = new Map(cfg.c.map(([l, h]) => [h, l]));
   const key = 'ori.s.' + cfg.i;
@@ -534,19 +539,22 @@ function validate(c) {
 }
 const tokOf = l => (T.cps.find(c => String(c.label).trim() === l) || {}).tok;
 async function buildStudentCfg() {
-  const c = T, groups = [];
+  const c = T, groups = [], K = [], memo = new Map();
   for (const g of c.groups) {
     const r = parseRoute(g.route), k = [];
     for (let i = 0; i < r.length; i++) {
       const cp = c.cps.find(x => String(x.label).trim() === r[i]);
-      const prevTok = i === 0 ? c.startTok : tokOf(r[i - 1]);
-      k.push(cp.clue && cp.clue.trim() ? await encClue(c.salt, prevTok, cp.clue.trim()) : 0);
+      const clue = (cp.clue || '').trim();
+      if (!clue) { k.push(-1); continue; }
+      const prev = i === 0 ? '\u0000start' : r[i - 1], mk = prev + '>' + r[i];
+      if (!memo.has(mk)) { K.push(await encClue(c.salt, i === 0 ? c.startTok : tokOf(r[i - 1]), clue)); memo.set(mk, K.length - 1); }
+      k.push(memo.get(mk));
     }
-    groups.push({ n: String(g.name).trim(), r, k });
+    groups.push([String(g.name).trim(), r.join(','), k]);
   }
   const cps = [];
   for (const cp of c.cps) cps.push([String(cp.label).trim(), await hashTok(c.salt, cp.tok)]);
-  return { v: 1, i: c.id, n: String(c.name).trim(), s: c.salt, p: await hashTok(c.salt, 'PIN:' + c.pin), st: await hashTok(c.salt, c.startTok), c: cps, g: groups };
+  return { v: 2, i: c.id, n: String(c.name).trim(), s: c.salt, p: await hashTok(c.salt, 'PIN:' + c.pin), st: await hashTok(c.salt, c.startTok), c: cps, g: groups, K };
 }
 function pageBase() { return location.href.split('#')[0].split('?')[0]; }
 function hostWarn() {
@@ -558,8 +566,8 @@ function hostWarn() {
 }
 function initTeacher() {
   T = store.get(TKEY);
-  if (!T || T.v !== 1) { T = newCourse(); }
-  if (T.link && !T.link.startsWith(pageBase() + '?')) T.link = null;
+  if (!T || T.v !== 1) { T = newCourse(); T.fresh = true; }
+  if (T.link && !(T.link.startsWith(pageBase() + '?') && T.link.includes('&c='))) T.link = null;
   T.results = T.results || {};
   saveT(); renderTeacher();
 }
@@ -568,7 +576,7 @@ function renderTeacher() {
   const body = tview === 'setup' ? vSetup() : tview === 'share' ? vShare() : vResults();
   $('#app').innerHTML = `<div class="topbar">${SYM.flag()}<div class="grow"><div class="t1">定向越野打卡｜教師端</div><div class="t2">${esc(T.name)}</div></div></div>
     <div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tview === k ? 'on' : ''}" data-act="tab:${k}">${l}</button>`).join('')}</div>
-    <div class="wrap wide">${tview !== 'share' ? hostWarn() : ''}${body}</div>`;
+    <div class="wrap wide">${T.fresh ? `<div class="banner info"><b>學生請注意：</b>如果你是點老師傳的連結卻看到這個「教師端」畫面，代表連結沒有完整開啟。請回到 LINE，<b>長按連結 → 複製</b>，再貼到 Safari 或 Chrome 的網址列開啟。</div>` : ''}${tview !== 'share' ? hostWarn() : ''}${body}</div>`;
   if (tview === 'setup') showValidation();
   if (tview === 'share') fillShare();
 }
@@ -639,7 +647,7 @@ async function fillShare() {
   if (warn && !/^(https?|file):$/.test(location.protocol)) { box.innerHTML = warn; return; }
   if (!T.link) {
     const cfg = await buildStudentCfg();
-    T.link = pageBase() + '?openExternalBrowser=1#c=' + packObj(cfg);
+    T.link = pageBase() + '?openExternalBrowser=1&c=' + packObj(cfg);
     saveT();
   }
   if (!$('#linkBox')) return;
@@ -647,7 +655,7 @@ async function fillShare() {
   $('#linkBox').innerHTML = `${warn}${q ? `<div class="qrbox">${q}</div><p class="small muted" style="text-align:center;margin-top:0">可投影讓學生用手機相機掃描，或複製連結用 LINE 傳送。</p>` : '<p class="small">連結太長，無法做成 QR Code（位置提示文字太多），請複製連結用 LINE 傳送。</p>'}
     <textarea class="inp link" readonly>${esc(T.link)}</textarea>
     <div class="row" style="margin-top:8px"><button class="btn btn-primary" data-act="copyLink">複製連結</button><a class="btn" href="${esc(T.link)}" target="_blank" rel="noopener">開啟學生畫面測試</a></div>
-    <p class="small muted">連結已加上 LINE 自動以外部瀏覽器開啟的參數，學生才能使用相機。修改設定後連結會自動更新，請重新傳送。</p>`;
+    <p class="small muted">連結已加上 LINE 自動以外部瀏覽器開啟的參數，學生才能使用相機。修改設定後連結會自動更新，請重新傳送。<br>連結長度：${T.link.length} 字元。</p>`;
 }
 function vResults() {
   const rows = T.groups.map((g, gi) => ({ g, gi, r: T.results[gi] })).filter(x => x.r).map(x => {
@@ -729,7 +737,7 @@ function exportCsv() {
   download(`${T.name}_成績.csv`, '﻿' + lines.join('\r\n'), 'text/csv;charset=utf-8');
 }
 async function tAct(a, arg) {
-  if (a === 'tab') { tview = arg; renderTeacher(); window.scrollTo(0, 0); }
+  if (a === 'tab') { tview = arg; if (T.fresh) { delete T.fresh; saveT(); } renderTeacher(); window.scrollTo(0, 0); }
   else if (a === 'applyCount') {
     const n = Math.max(1, Math.min(60, parseInt($('#cpCount').value) || 1));
     if (n < T.cps.length && !(await ask('減少檢查點？', `會刪除最後 ${T.cps.length - n} 個檢查點。`))) return;
@@ -803,7 +811,7 @@ document.addEventListener('input', e => {
   if (d.f) { T[d.f] = d.f === 'minLeg' ? Math.max(0, parseInt(t.value) || 0) : t.value; hit = true; }
   else if (d.cp != null) { T.cps[+d.cp][d.k] = t.value; hit = true; }
   else if (d.gi != null) { T.groups[+d.gi][d.k] = t.value; hit = true; }
-  if (hit) { T.link = null; saveT(); showValidation(); }
+  if (hit) { T.link = null; if (T.fresh) { delete T.fresh; } saveT(); showValidation(); }
 });
 setInterval(() => { const el = $('#elapsed'); if (el && S && S.st.s && !S.st.f) el.textContent = fmt((Date.now() - S.st.s) / 1000); }, 1000);
 window.addEventListener('hashchange', () => location.reload());
@@ -812,8 +820,10 @@ window.addEventListener('hashchange', () => location.reload());
     $('#app').innerHTML = '<div class="wrap"><div class="card"><h2>無法在這裡執行</h2><p>這個畫面（檔案預覽、LINE 內建檢視器或非 https 網址）不支援本程式。</p><p>請把 index.html 上傳到 GitHub Pages 等 <b>https</b> 網站，再用 Safari 或 Chrome 開啟。</p></div></div>';
     return;
   }
-  const m = location.hash.match(/^#c=([A-Za-z0-9_-]+)/);
-  if (m) { MODE = 's'; initStudent(m[1]); } else { MODE = 't'; initTeacher(); }
+  let packed = null;
+  try { packed = new URLSearchParams(location.search).get('c'); } catch (e) {}
+  if (!packed) { const m = location.hash.match(/^#c=([A-Za-z0-9_-]+)/); if (m) packed = m[1]; }
+  if (packed) { MODE = 's'; initStudent(packed.trim()); } else { MODE = 't'; initTeacher(); }
 })();
 </script>
 </body>
